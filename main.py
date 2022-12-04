@@ -5,55 +5,68 @@ import network
 import rp2
 import ubinascii
 import urequests
+import ntptime
+import machine
 
-ntp_host = "pool.ntp.org"
 
-rp2.country('GB')
+def main():
+    rp2.country('GB')
 
-config_file = open('config.json', 'r')
-config = json.loads(config_file.read())
-config_file.close()
+    config_file = open('config.json', 'r')
+    config = json.loads(config_file.read())
+    config_file.close()
 
-wlan = network.WLAN(network.STA_IF)
-wlan.active(True)
-print()
-wlan.connect(config.get('ssid'), config.get('password'))
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    print()
+    wlan.connect(config.get('ssid'), config.get('password'))
 
-# Wait for connect or fail
-max_wait = 10
-while max_wait > 0:
-    if wlan.status() < 0 or wlan.status() >= 3:
-        break
-    max_wait -= 1
-    print('waiting for connection...')
-    time.sleep(1)
-
-# Handle connection error
-if wlan.status() != 3:
-    raise RuntimeError('network connection failed')
-else:
-    print('connected')
-    status = wlan.ifconfig()
-    print('ip = ' + status[0])
-
-mac = ubinascii.hexlify(network.WLAN().config('mac'), ':').decode()
-print(f"mac: {mac}")
-
-while True:
-    try:
-        print("getting the time...")
-        response = urequests.get("http://date.jsontest.com")
-        print(response.json())
-        response.close()
-    except ValueError as e:
-        print("could not connect (status =" + str(wlan.status()) + ") - " + str(e))
+    # Wait for connect or fail
+    max_wait = 10
+    while max_wait > 0:
         if wlan.status() < 0 or wlan.status() >= 3:
-            print("trying to reconnect...")
-            wlan.disconnect()
-            wlan.connect(config.get('ssid'), config.get('password'))
-            if wlan.status() == 3:
-                print('connected')
-            else:
-                print('failed')
+            break
+        max_wait -= 1
+        print('waiting for connection...')
+        time.sleep(1)
 
-    time.sleep(5)
+    # Handle connection error
+    if wlan.status() != 3:
+        raise RuntimeError('network connection failed')
+    else:
+        print('connected')
+        status = wlan.ifconfig()
+        print('ip = ' + status[0])
+
+    mac = ubinascii.hexlify(network.WLAN().config('mac'), ':').decode()
+    print(f"mac: {mac}")
+
+    rtc = machine.RTC()
+
+    ntptime.settime()
+    print(rtc.datetime())
+
+    while True:
+        try:
+            print("Fetching bin calendar...")
+            response = urequests.get(
+                "https://servicelayer3c.azure-api.net/wastecalendar/calendar/ical/200004185983")
+            print(response.text)
+            response.close()
+        except ValueError as e:
+            print("could not connect (status =" +
+                  str(wlan.status()) + ") - " + str(e))
+            if wlan.status() < 0 or wlan.status() >= 3:
+                print("trying to reconnect...")
+                wlan.disconnect()
+                wlan.connect(config.get('ssid'), config.get('password'))
+                if wlan.status() == 3:
+                    print('connected')
+                else:
+                    print('failed')
+
+        time.sleep(60)
+
+
+if __name__ == "__main__":
+    main()
