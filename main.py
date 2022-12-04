@@ -7,7 +7,10 @@ import ubinascii
 import urequests
 import ntptime
 import machine
+import gc
+import micropython
 
+from icalendar import parse
 
 def main():
     rp2.country('GB')
@@ -44,15 +47,28 @@ def main():
     rtc = machine.RTC()
 
     ntptime.settime()
-    print(rtc.datetime())
+    now = rtc.datetime()
+    print(now)    
 
     while True:
         try:
+            print(f"mem: {gc.mem_free()} - {gc.mem_alloc()}")
+            micropython.mem_info()
             print("Fetching bin calendar...")
             response = urequests.get(
                 "https://servicelayer3c.azure-api.net/wastecalendar/calendar/ical/200004185983")
-            print(response.text)
+            print("Parsing calendar...")
+            (_, events) = parse(response.text.splitlines())
+            for e in events:
+                print(e)
+            print(f"mem: {gc.mem_free()} - {gc.mem_alloc()}")
+            micropython.mem_info()
+            del e
             response.close()
+            del response
+            gc.collect()
+            print(f"mem: {gc.mem_free()} - {gc.mem_alloc()}")
+            micropython.mem_info()
         except ValueError as e:
             print("could not connect (status =" +
                   str(wlan.status()) + ") - " + str(e))
@@ -65,7 +81,7 @@ def main():
                 else:
                     print('failed')
 
-        time.sleep(60)
+        time.sleep(1)
 
 
 if __name__ == "__main__":

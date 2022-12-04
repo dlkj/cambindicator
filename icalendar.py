@@ -2,60 +2,90 @@ class ParseError(Exception):
     pass
 
 
+class peakable:
+    def __init__(self, iterable):
+        self._it = iter(iterable)
+        self._cache = None
+
+    def __iter__(self):
+        return self
+
+    def peek(self):
+        if not self._cache:
+            self._cache = next(self._it)
+        return self._cache
+
+    def __next__(self):
+        if self._cache:
+            c = self._cache
+            self._cache = None
+            return c
+        return next(self._it)
+
+
 def parse(input):
-    (input, _) = terminated(tag("BEGIN:VCALENDAR"), newline)(input)
-    (input, _) = header(input)
-    (input, events) = many(event)(input)
-    (input, _) = tag("END:VCALENDAR")(input)
-    print(input.strip())
-    for e in events:
-        print(e)
-    return True
+    input = peakable(input)
+
+    (input, _) = parse_line(tag("BEGIN:VCALENDAR"))(input)
+    (input, _) = header_lines(input)
+    (input, events) = many_lines(event_lines)(input)
+    (input, _) = parse_line(tag("END:VCALENDAR"))(input)
+    return (input, events)
 
 
-def event(input):
-    (input, _) = terminated(tag("BEGIN:VEVENT"), newline)(input)
-    (input, items) = many(alt([
-        terminated(separated_pair(tag("UID"), tag(
-            ":"), take_until(newline)), newline),
-        terminated(separated_pair(tag("DTSTAMP"), tag(
-            ":"), take_until(newline)), newline),
-        terminated(separated_pair(tag("DTSTART;VALUE=DATE"),
-                   tag(":"), take_until(newline)), newline),
-        terminated(separated_pair(tag("SUMMARY"), tag(
-            ":"), take_until(newline)), newline),
+def parse_line(tag):
+    def line_inner(input):
+        (buf, val) = tag(input.peek())
+        if len(buf) > 0:
+            raise ParseError("incomplete line parse, '{buf}' remaining")
+        next(input)
+        return (input, val)
+    return line_inner
+
+
+def event_lines(input):
+    (input, _) = parse_line(tag("BEGIN:VEVENT"))(input)
+    (input, items) = many_lines(alt_lines([
+        parse_line(value(None, separated_pair(tag("UID"), tag(
+            ":"), take_until_oel_discard))),
+        parse_line(value(None, separated_pair(tag("DTSTAMP"), tag(
+            ":"), take_until_oel_discard))),
+        parse_line(separated_pair(value("START", tag("DTSTART;VALUE=DATE")),
+                                  tag(":"), take_until_oel)),
+        parse_line(separated_pair(tag("SUMMARY"), tag(
+            ":"), map(take_until_oel, lambda s: s.split(" ")[0]))),
     ]))(input)
-    (input, _) = terminated(tag("END:VEVENT"), newline)(input)
+    (input, _) = parse_line(tag("END:VEVENT"))(input)
     return (input, items)
 
 
-def header(input):
-    (input, _) = many(alt([
-        terminated(separated_pair(tag("PRODID"), tag(
-            ":"), take_until(newline)), newline),
-        terminated(separated_pair(tag("VERSION"), tag(
-            ":"), take_until(newline)), newline),
-        terminated(pair(tag("X-"), take_until(newline)), newline)
+def header_lines(input):
+    return many_lines(alt_lines([
+        parse_line(separated_pair(tag("PRODID"), tag(
+            ":"), take_until_oel_discard)),
+        parse_line(separated_pair(tag("VERSION"), tag(
+            ":"), take_until_oel_discard)),
+        parse_line(pair(tag("X-"), take_until_oel_discard))
     ]))(input)
-    return (input, ())
 
 
-def many(c):
-    def many_inner(input):
+def many_lines(c):
+    def many_lines_inner(input):
         results = []
 
         while True:
             try:
                 (input, r) = c(input)
-                results.append(r)
+                if r is not None:
+                    results.append(r)
             except ParseError:
                 return (input, results)
 
-    return many_inner
+    return many_lines_inner
 
 
-def alt(combs):
-    def alt_inner(input):
+def alt_lines(combs):
+    def alt_lines_inner(input):
         for c in combs:
             try:
                 return c(input)
@@ -63,20 +93,15 @@ def alt(combs):
                 pass
         raise ParseError("No parsers matched alt")
 
-    return alt_inner
+    return alt_lines_inner
 
 
-def take_until(tag):
-    def take_until_inner(input):
+def take_until_oel(input):
+    return ("", input)
 
-        for i in range(len(input)):
-            try:
-                tag(input[i:])
-                return (input[i:], input[:i])
-            except ParseError:
-                pass
-        return ("", input)
-    return take_until_inner
+
+def take_until_oel_discard(_):
+    return ("", None)
 
 
 def pair(first, second):
@@ -113,11 +138,15 @@ def tag(value):
     return tag_inner
 
 
-def newline(input):
-    try:
-        return tag("\n")(input)
-    except ParseError:
-        try:
-            return tag("\n\r")(input)
-        except ParseError:
-            raise ParseError("new line not matched")
+def map(tag, f):
+    def map_inner(input):
+        (input, val) = tag(input)
+        return (input, f(val))
+    return map_inner
+
+
+def value(value, tag):
+    def map_inner(input):
+        (input, _) = tag(input)
+        return (input, value)
+    return map_inner

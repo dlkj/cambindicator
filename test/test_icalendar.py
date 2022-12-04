@@ -4,7 +4,11 @@ from icalendar import parse
 
 class TestIcalendar(unittest.TestCase):
     def test_read(self):
-        self.assertEqual(parse(test_data), True)
+        (input, events) = parse(test_data.splitlines())
+
+        for e in events:
+            print(e)
+        self.assertRaises(StopIteration, input.__next__)
 
 
 test_data = """BEGIN:VCALENDAR
