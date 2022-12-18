@@ -6,8 +6,8 @@ class TestIcalendar(unittest.TestCase):
     def test_read(self):
         (input, events) = parse(test_data.splitlines())
 
-        for e in events:
-            print(e)
+        self.assertEqual(len(events), 16)
+
         self.assertRaises(StopIteration, input.__next__)
 
 

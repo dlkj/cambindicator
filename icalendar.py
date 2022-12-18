@@ -28,7 +28,7 @@ def parse(input):
 
     (input, _) = parse_line(tag("BEGIN:VCALENDAR"))(input)
     (input, _) = header_lines(input)
-    (input, events) = many_lines(event_lines)(input)
+    (input, events) = many_lines(map(event_lines, tuples_to_dict))(input)
     (input, _) = parse_line(tag("END:VCALENDAR"))(input)
     return (input, events)
 
@@ -51,12 +51,27 @@ def event_lines(input):
         parse_line(value(None, separated_pair(tag("DTSTAMP"), tag(
             ":"), take_until_oel_discard))),
         parse_line(separated_pair(value("START", tag("DTSTART;VALUE=DATE")),
-                                  tag(":"), take_until_oel)),
+                                  tag(":"), map(take_until_oel, to_date_tuple))),
         parse_line(separated_pair(tag("SUMMARY"), tag(
-            ":"), map(take_until_oel, lambda s: s.split(" ")[0]))),
+            ":"), map(take_until_oel, lambda s: s.split(" ")[0].upper()))),
     ]))(input)
     (input, _) = parse_line(tag("END:VEVENT"))(input)
     return (input, items)
+
+
+def tuples_to_dict(input):
+    dict = {}
+    for (k, v) in input:
+        dict[k] = v
+    return dict
+
+
+def to_date_tuple(input):
+    return (
+        int(input[0:4]),
+        int(input[4:6]),
+        int(input[6:8])
+    )
 
 
 def header_lines(input):
