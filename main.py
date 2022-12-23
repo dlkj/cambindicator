@@ -18,16 +18,15 @@ def main():
 
     pin = Pin(0, Pin.OUT)
     np = NeoPixel(pin, 16)
-    while True:
-        try:
-            inner_main(np)
-
-        except Exception as e:
-            # red - full error
-            print(f"Uncaught error {e}")
-            np.fill((255, 0, 0))
-            np.write()
-            time.sleep(1)
+    try:
+        inner_main(np)
+    except Exception as e:
+        # red - full error
+        print(f"Uncaught error {e}")
+        np.fill((255, 0, 0))
+        np.write()
+        time.sleep(1)
+    machine.reset()
 
 
 def get_config():
@@ -101,19 +100,7 @@ def inner_main(np):
     # init the RTC
     rtc = machine.RTC()
     time.sleep(1)
-    for _ in range(0, 30):
-        try:
-            ntptime.settime()
-            break
-        except Exception as e:
-            print(f"Failed to set RTC {e}")
-            time.sleep_ms(250)
-            np.fill((0, 0, 0))
-            np.write()
-            time.sleep_ms(750)
-            np.fill((0, 0, 32))
-            np.write()
-
+    get_ntp()
     print(f"RTC time: {rtc.datetime()}")
 
     np.fill((0, 0, 0))
@@ -125,14 +112,17 @@ def inner_main(np):
         seconds_since_calendar_update += 1
         if seconds_since_calendar_update > 3600:
             print("Fetching bin calendar...")
+            get_ntp()
+
+            print(f"RTC time: {rtc.datetime()}")
             calendar_events = get_events()
             seconds_since_calendar_update = 0
             print("Calendar fetched")
-
-        (_, _, _, hour, _, _, _, _) = rtc.datetime()
-        if 17 <= hour <= 22:
             bins = get_bins_for_date(calendar_events, tomorrow(rtc.datetime()))
 
+        (_, _, _, _, hour, _, _, _) = rtc.datetime()
+
+        if 17 <= hour <= 22:
             if bins == {"GREEN"}:
                 np.fill((0, 255, 0))
             elif bins == {"BLUE"}:
@@ -145,7 +135,7 @@ def inner_main(np):
                 for i in range(8, 16):
                     np[i] = (0, 255, 0)
             else:
-                np.fill(0, 0, 0)
+                np.fill((0, 0, 0))
         else:
             np.fill((0, 0, 0))
         np.write()
@@ -182,6 +172,17 @@ def get_events():
     finally:
         response.close()
     return events
+
+
+def get_ntp():
+    for _ in range(0, 30):
+        try:
+            ntptime.settime()
+            return
+        except Exception as e:
+            print(f"Failed to set RTC {e}")
+            time.sleep_ms(1000)
+    raise Exception("Failed to set RTC")
 
 
 if __name__ == "__main__":
