@@ -1,0 +1,12 @@
+{
+    "rust-analyzer.linkedProjects": [
+        "Cargo.toml",
+        "cross/Cargo.toml",
+    ],
+    "rust-analyzer.cargo.target": "thumbv6m-none-eabi",
+    "rust-analyzer.check.allTargets": false,
+    "rust-analyzer.check.extraArgs": [
+        "--target",
+        "thumbv6m-none-eabi"
+    ]
+}

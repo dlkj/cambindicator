@@ -1,0 +1,7 @@
+[package]
+authors = ["Daniel Kenyon-Jones"]
+name = "ical-parser"
+publish = false
+version = "0.1.0"
+edition = "2021"
+license = "BSD-2"
