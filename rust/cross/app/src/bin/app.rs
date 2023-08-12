@@ -4,14 +4,13 @@
 #![feature(async_fn_in_trait)]
 #![allow(incomplete_features)]
 
-use core::str::FromStr;
-
 use cyw43_pio::PioSpi;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_futures::yield_now;
+use embassy_net::dns::DnsQueryType;
 use embassy_net::tcp::TcpSocket;
-use embassy_net::{Config, Stack, StackResources};
+use embassy_net::{Config, IpEndpoint, Stack, StackResources};
 use embassy_rp::bind_interrupts;
 use embassy_rp::gpio::{Level, Output};
 use embassy_rp::peripherals::{DMA_CH0, PIN_23, PIN_25, PIO0};
@@ -84,7 +83,7 @@ async fn main(spawner: Spawner) {
     let stack = &*make_static!(Stack::new(
         net_device,
         config,
-        make_static!(StackResources::<2>::new()),
+        make_static!(StackResources::<3>::new()),
         seed
     ));
 
@@ -108,13 +107,37 @@ async fn main(spawner: Spawner) {
     // server(stack, &mut control).await
 }
 
-async fn client<'a, D: embassy_net::driver::Driver>(
-    stack: &Stack<D>,
-    control: &mut cyw43::Control<'a>,
-) -> ! {
+async fn client<'a, D>(stack: &Stack<D>, control: &mut cyw43::Control<'a>) -> !
+where
+    D: embassy_net::driver::Driver + 'static,
+{
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
     let mut buf = [0; 4096];
+
+    info!("Resolving DNS addresses");
+    let worldtime_host = "worldtimeapi.org";
+    let worldtime_address = stack
+        .dns_query(worldtime_host, DnsQueryType::A)
+        .await
+        .unwrap()
+        .first()
+        .cloned()
+        .unwrap();
+
+    info!("{}: {}", worldtime_host, worldtime_address);
+
+    let servicelayer3c_host = "servicelayer3c.azure-api.net";
+    let servicelayer3c_address = stack
+        .dns_query(servicelayer3c_host, DnsQueryType::A)
+        .await
+        .unwrap()
+        .first()
+        .cloned()
+        .unwrap();
+
+    info!("{}: {}", servicelayer3c_host, servicelayer3c_address);
+    info!("Addresses resolved");
 
     loop {
         let mut socket = embassy_net::tcp::TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
@@ -123,11 +146,34 @@ async fn client<'a, D: embassy_net::driver::Driver>(
         control.gpio_set(0, false).await;
 
         loop {
-            match http_get(&mut socket, &mut buf).await {
+            // http://worldtimeapi.org/api/ip.txt
+            match http_get(
+                (worldtime_address, 80),
+                worldtime_host,
+                "/api/ip.txt",
+                &mut socket,
+                &mut buf,
+            )
+            .await
+            {
                 Ok(n) => info!(
                     "worldtime: {:?}",
                     worldtime_parser::parse::<()>(&buf[..n]).unwrap().1
                 ),
+                Err(e) => error!("failed to get worldtime: {}", e),
+            };
+
+            // http://servicelayer3c.azure-api.net/wastecalendar/calendar/ical/200004185983
+            match http_get(
+                (servicelayer3c_address, 80),
+                servicelayer3c_host,
+                "/wastecalendar/calendar/ical/200004185983",
+                &mut socket,
+                &mut buf,
+            )
+            .await
+            {
+                Ok(n) => info!("bin calendar: {}", n),
                 Err(e) => error!("failed to get worldtime: {}", e),
             };
 
@@ -161,14 +207,24 @@ impl From<embassy_net::tcp::Error> for HttpClientError {
     }
 }
 
-async fn http_get(socket: &mut TcpSocket<'_>, buf: &mut [u8]) -> Result<usize, HttpClientError> {
-    let msg = b"GET /api/ip.txt HTTP/1.1\r\nAccept: */*\r\nConnection: close\r\n\r\n";
-    let host_addr = embassy_net::Ipv4Address::from_str("213.188.196.246").unwrap();
-
+async fn http_get<T: Into<IpEndpoint>>(
+    remote_endpoint: T,
+    host: &str,
+    path: &str,
+    socket: &mut TcpSocket<'_>,
+    buf: &mut [u8],
+) -> Result<usize, HttpClientError> {
     socket.abort();
     socket.flush().await?;
-    socket.connect((host_addr, 80)).await?;
-    socket.write_all(msg).await?;
+    socket.connect(remote_endpoint).await?;
+    socket.write_all(b"GET ").await?;
+    socket.write_all(path.as_bytes()).await?;
+    socket.write_all(b" HTTP/1.1\nHost: ").await?;
+    socket.write_all(host.as_bytes()).await?;
+    socket
+        .write_all(b"\nAccept: */*\nConnection: close\n\n")
+        .await?;
+
     let result = socket.read(buf).await;
     socket.close();
     Ok(result?)

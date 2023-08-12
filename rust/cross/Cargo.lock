@@ -164,7 +164,6 @@ dependencies = [
  "embassy-executor",
  "embassy-futures",
  "embassy-net",
- "embassy-net-w5500",
  "embassy-rp",
  "embassy-sync",
  "embassy-time",
@@ -509,19 +508,6 @@ dependencies = [
  "embassy-futures",
  "embassy-net-driver",
  "embassy-sync",
-]
-
-[[package]]
-name = "embassy-net-w5500"
-version = "0.1.0"
-source = "git+https://github.com/embassy-rs/embassy.git#c1da2c0219667085124c47d8059ffbf077adaf9d"
-dependencies = [
- "defmt",
- "embassy-futures",
- "embassy-net-driver-channel",
- "embassy-time",
- "embedded-hal 1.0.0-alpha.11",
- "embedded-hal-async",
 ]
 
 [[package]]
