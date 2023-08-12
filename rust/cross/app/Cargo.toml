@@ -35,6 +35,7 @@ embassy-rp = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy.g
     "unstable-pac",
     "time-driver",
     "critical-section-impl",
+    "chrono",
 ] }
 embassy-net = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy.git", features = [
     "defmt",
@@ -82,3 +83,5 @@ pio-proc = "0.2"
 pio = "0.2.1"
 rand = { version = "0.8.5", default-features = false }
 worldtime-parser = { path = "../../worldtime-parser" }
+ical-parser = { path = "../../ical-parser" }
+nom = { version = "7.1.3", default-features = false }

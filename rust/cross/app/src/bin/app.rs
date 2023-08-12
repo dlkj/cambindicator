@@ -12,11 +12,14 @@ use embassy_net::dns::DnsQueryType;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{Config, IpEndpoint, Stack, StackResources};
 use embassy_rp::bind_interrupts;
+use embassy_rp::clocks::RoscRng;
 use embassy_rp::gpio::{Level, Output};
 use embassy_rp::peripherals::{DMA_CH0, PIN_23, PIN_25, PIO0};
 use embassy_rp::pio::{InterruptHandler, Pio};
+use embassy_rp::rtc::{DateTime, Rtc};
 use embassy_time::{Duration, Timer};
 use embedded_io_async::Write;
+use rand::RngCore;
 use static_cell::make_static;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -48,6 +51,7 @@ async fn main(spawner: Spawner) {
     info!("Starting...");
 
     let p = embassy_rp::init(Default::default());
+    let mut rtc = Rtc::new(p.RTC);
 
     let fw = include_bytes!("../../cyw43-firmware/43439A0.bin");
     let clm = include_bytes!("../../cyw43-firmware/43439A0_clm.bin");
@@ -76,15 +80,12 @@ async fn main(spawner: Spawner) {
 
     let config = Config::dhcpv4(Default::default());
 
-    // Generate random seed
-    let seed = 0x0123_4567_89ab_cdef; // chosen by fair dice roll. guaranteed to be random.
-
     // Init network stack
     let stack = &*make_static!(Stack::new(
         net_device,
         config,
         make_static!(StackResources::<3>::new()),
-        seed
+        RoscRng.next_u64()
     ));
 
     unwrap!(spawner.spawn(net_task(stack)));
@@ -103,11 +104,15 @@ async fn main(spawner: Spawner) {
     let local_addr = cfg.address.address();
     info!("IP address: {:?}", local_addr);
 
-    client(stack, &mut control).await
+    client(stack, &mut rtc, &mut control).await
     // server(stack, &mut control).await
 }
 
-async fn client<'a, D>(stack: &Stack<D>, control: &mut cyw43::Control<'a>) -> !
+async fn client<D>(
+    stack: &Stack<D>,
+    rtc: &mut Rtc<'_, embassy_rp::peripherals::RTC>,
+    control: &mut cyw43::Control<'_>,
+) -> !
 where
     D: embassy_net::driver::Driver + 'static,
 {
@@ -156,10 +161,23 @@ where
             )
             .await
             {
-                Ok(n) => info!(
-                    "worldtime: {:?}",
-                    worldtime_parser::parse::<()>(&buf[..n]).unwrap().1
-                ),
+                Ok(n) => {
+                    let (year, month, day, hour, minute, second) =
+                        worldtime_parser::parse::<()>(&buf[..n]).unwrap().1;
+
+                    let date = DateTime {
+                        year,
+                        month,
+                        day,
+                        day_of_week: embassy_rp::rtc::DayOfWeek::Monday,
+                        hour,
+                        minute,
+                        second,
+                    };
+
+                    info!("worldtime: {:#?}", Debug2Format(&date));
+                    rtc.set_datetime(date).unwrap()
+                }
                 Err(e) => error!("failed to get worldtime: {}", e),
             };
 
@@ -173,7 +191,13 @@ where
             )
             .await
             {
-                Ok(n) => info!("bin calendar: {}", n),
+                Ok(n) => {
+                    for (a, b) in
+                        &mut nom::combinator::iterator(&buf[..n], ical_parser::parse_event::<()>)
+                    {
+                        println!("{} {}", a, core::str::from_utf8(b).unwrap());
+                    }
+                }
                 Err(e) => error!("failed to get worldtime: {}", e),
             };
 

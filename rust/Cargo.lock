@@ -9,6 +9,9 @@ version = "0.1.0"
 [[package]]
 name = "ical-parser"
 version = "0.1.0"
+dependencies = [
+ "nom",
+]
 
 [[package]]
 name = "memchr"
