@@ -158,8 +158,11 @@ def tomorrow(date):
     day += 1
 
     if day > days_in_month[month]:
-        day = 0
+        day = 1
         month += 1
+    
+    if month > 12:
+        month = 1
 
     return (year, month, day, hour, min, sec, ms, ns)
 
