@@ -8,51 +8,43 @@ authors = ["Daniel Kenyon-Jones"]
 
 
 [dependencies]
-embassy-embedded-hal = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy.git", features = [
+embassy-embedded-hal = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy.git", rev = "850fe72", features = [
     "defmt",
 ] }
-embassy-sync = { version = "0.2.0", git = "https://github.com/embassy-rs/embassy.git", features = [
+embassy-sync = { version = "0.5.0", git = "https://github.com/embassy-rs/embassy.git", rev = "850fe72", features = [
     "defmt",
 ] }
-embassy-executor = { version = "0.2.0", git = "https://github.com/embassy-rs/embassy.git", features = [
-    "nightly",
+embassy-executor = { version = "0.5.0", git = "https://github.com/embassy-rs/embassy.git", rev = "850fe72", features = [
+    "task-arena-size-32768",
     "arch-cortex-m",
     "executor-thread",
     "executor-interrupt",
     "defmt",
     "integrated-timers",
 ] }
-embassy-time = { version = "0.1.2", git = "https://github.com/embassy-rs/embassy.git", features = [
-    "nightly",
-    "unstable-traits",
+embassy-time = { version = "0.3.0", git = "https://github.com/embassy-rs/embassy.git", rev = "850fe72", features = [
     "defmt",
     "defmt-timestamp-uptime",
 ] }
-embassy-rp = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy.git", features = [
+embassy-rp = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy.git", rev = "850fe72", features = [
     "defmt",
-    "unstable-traits",
-    "nightly",
     "unstable-pac",
     "time-driver",
     "critical-section-impl",
-    "chrono",
 ] }
-embassy-net = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy.git", features = [
+embassy-net = { version = "0.4.0", git = "https://github.com/embassy-rs/embassy.git", rev = "850fe72", features = [
     "defmt",
-    "nightly",
     "tcp",
     "dhcpv4",
     "medium-ethernet",
     "dns",
 ] }
-embassy-futures = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy.git" }
-embassy-usb = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy.git" }
-embassy-usb-logger = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy.git" }
-cyw43 = { git = "https://github.com/embassy-rs/embassy.git", features = [
+embassy-futures = { version = "0.1.0", git = "https://github.com/embassy-rs/embassy.git", rev = "850fe72" }
+cyw43 = { git = "https://github.com/embassy-rs/embassy.git", rev = "850fe72", features = [
     "defmt",
     "firmware-logs",
 ] }
-cyw43-pio = { git = "https://github.com/embassy-rs/embassy.git", features = [
+cyw43-pio = { git = "https://github.com/embassy-rs/embassy.git", rev = "850fe72", features = [
     "defmt",
     "overclock",
 ] }
@@ -71,13 +63,13 @@ futures = { version = "0.3.17", default-features = false, features = [
     "unstable",
 ] }
 byte-slice-cast = { version = "1.2.0", default-features = false }
-smart-leds = "0.3.0"
-heapless = "0.7.15"
-
-embedded-hal-1 = { package = "embedded-hal", version = "=1.0.0-alpha.11" }
-embedded-hal-async = { version = "0.2.0-alpha.2" }
-embedded-io-async = { version = "0.5.0", features = ["defmt-03"] }
-static_cell = { version = "1.1", features = ["nightly"] }
+smart-leds = "0.4"
+heapless = "0.8"
+embedded-hal-1 = { package = "embedded-hal", version = "1.0" }
+embedded-hal-async = { version = "1.0" }
+embedded-io-async = { version = "0.6.1", features = ["defmt-03"] }
+static_cell = { version = "2.0" }
+portable-atomic = { version = "1.5", features = ["critical-section"] }
 log = "0.4"
 pio-proc = "0.2"
 pio = "0.2.1"
