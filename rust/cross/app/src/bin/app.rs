@@ -7,7 +7,7 @@ use cyw43_pio::PioSpi;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_futures::yield_now;
-use embassy_net::dns::DnsQueryType;
+use embassy_net::dns::{self, DnsQueryType};
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{Config, IpEndpoint, Stack, StackResources};
 use embassy_rp::bind_interrupts;
@@ -18,16 +18,20 @@ use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_rp::rtc::{DateTime, Rtc};
 use embassy_time::{Duration, Timer};
 use embedded_io_async::Write;
+use heapless::Vec;
 use rand::RngCore;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
+const WIFI_SSID: &str = env!("WIFI_SSID");
+const WIFI_PASSWORD: &str = env!("WIFI_PASSWORD");
+
+const WORLDTIME_HOST: &str = "worldtimeapi.org";
+const SERVICELAYER3C_HOST: &str = "servicelayer3c.azure-api.net";
+
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
 });
-
-const WIFI_SSID: &str = env!("WIFI_SSID");
-const WIFI_PASSWORD: &str = env!("WIFI_PASSWORD");
 
 #[embassy_executor::task]
 async fn wifi_task(
@@ -104,7 +108,6 @@ async fn main(spawner: Spawner) {
     info!("IP address: {:?}", local_addr);
 
     client(stack, &mut rtc, &mut control).await
-    // server(stack, &mut control).await
 }
 
 async fn client<D>(
@@ -115,33 +118,22 @@ async fn client<D>(
 where
     D: embassy_net::driver::Driver + 'static,
 {
+    /*
+     * # Every hour
+     *
+     * - Resolve DNS to ip addresses
+     * - Set RTC from API
+     * - Fetch the next calendar events
+     *
+     * # Every min
+     *
+     * - work out if we should be showing a notification
+     * - set the correct light show
+     */
+
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
     let mut buf = [0; 4096];
-
-    info!("Resolving DNS addresses");
-    let worldtime_host = "worldtimeapi.org";
-    let worldtime_address = stack
-        .dns_query(worldtime_host, DnsQueryType::A)
-        .await
-        .unwrap()
-        .first()
-        .cloned()
-        .unwrap();
-
-    info!("{}: {}", worldtime_host, worldtime_address);
-
-    let servicelayer3c_host = "servicelayer3c.azure-api.net";
-    let servicelayer3c_address = stack
-        .dns_query(servicelayer3c_host, DnsQueryType::A)
-        .await
-        .unwrap()
-        .first()
-        .cloned()
-        .unwrap();
-
-    info!("{}: {}", servicelayer3c_host, servicelayer3c_address);
-    info!("Addresses resolved");
 
     let mut socket = embassy_net::tcp::TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
     socket.set_timeout(Some(Duration::from_secs(10)));
@@ -149,58 +141,106 @@ where
     control.gpio_set(0, false).await;
 
     loop {
-        // http://worldtimeapi.org/api/ip.txt
-        match http_get(
-            (worldtime_address, 80),
-            worldtime_host,
-            "/api/ip.txt",
-            &mut socket,
-            &mut buf,
-        )
-        .await
-        {
-            Ok(n) => {
-                let (year, month, day, hour, minute, second) =
-                    worldtime_parser::parse::<()>(&buf[..n]).unwrap().1;
+        set_rtc(stack, &mut socket, &mut buf, rtc).await;
+        let calendar = get_calendar(stack, &mut socket, &mut buf).await;
 
-                let date = DateTime {
-                    year,
-                    month,
-                    day,
-                    day_of_week: embassy_rp::rtc::DayOfWeek::Monday,
-                    hour,
-                    minute,
-                    second,
-                };
-
-                info!("worldtime: {:#?}", Debug2Format(&date));
-                rtc.set_datetime(date).unwrap()
-            }
-            Err(e) => error!("failed to get worldtime: {}", e),
-        };
-
-        // http://servicelayer3c.azure-api.net/wastecalendar/calendar/ical/200004185983
-        match http_get(
-            (servicelayer3c_address, 80),
-            servicelayer3c_host,
-            "/wastecalendar/calendar/ical/200004185983",
-            &mut socket,
-            &mut buf,
-        )
-        .await
-        {
-            Ok(n) => {
-                for (a, b) in
-                    &mut nom::combinator::iterator(&buf[..n], ical_parser::parse_event::<()>)
-                {
-                    println!("{} {}", a, core::str::from_utf8(b).unwrap());
-                }
-            }
-            Err(e) => error!("failed to get worldtime: {}", e),
-        };
-
-        Timer::after(Duration::from_secs(10)).await;
+        Timer::after(Duration::from_secs(60)).await;
     }
+}
+
+async fn get_calendar<D>(
+    stack: &Stack<D>,
+    socket: &mut TcpSocket<'_>,
+    buf: &mut [u8; 4096],
+) -> Result<Vec<(u32, BinColour), 16>, HttpClientError>
+where
+    D: embassy_net::driver::Driver,
+{
+    // Update dns resolution
+    let servicelayer3c_address = resolve_dns(stack, SERVICELAYER3C_HOST).await.unwrap();
+
+    // http://servicelayer3c.azure-api.net/wastecalendar/calendar/ical/200004185983
+    http_get(
+        (servicelayer3c_address, 80),
+        SERVICELAYER3C_HOST,
+        "/wastecalendar/calendar/ical/200004185983",
+        socket,
+        buf,
+    )
+    .await
+    .map(|n| {
+        let values: Vec<_, 16> =
+            nom::combinator::iterator(&buf[..n], ical_parser::parse_event::<()>)
+                .map(|(time, bin)| {
+                    let bin = if bin.starts_with(b"Black") {
+                        BinColour::Black
+                    } else if bin.starts_with(b"Blue") {
+                        BinColour::Blue
+                    } else {
+                        BinColour::Green
+                    };
+
+                    (time, bin)
+                })
+                .collect();
+
+        for (a, b) in &values {
+            println!("{} {}", a, b);
+        }
+        values
+    })
+}
+
+async fn set_rtc<D>(
+    stack: &Stack<D>,
+    socket: &mut TcpSocket<'_>,
+    buf: &mut [u8; 4096],
+    rtc: &mut Rtc<'_, embassy_rp::peripherals::RTC>,
+) where
+    D: embassy_net::driver::Driver,
+{
+    // Update dns resolution
+    let worldtime_address = resolve_dns(stack, WORLDTIME_HOST).await.unwrap();
+
+    // http://worldtimeapi.org/api/ip.txt
+    match http_get(
+        (worldtime_address, 80),
+        WORLDTIME_HOST,
+        "/api/ip.txt",
+        socket,
+        buf,
+    )
+    .await
+    {
+        Ok(n) => {
+            let (year, month, day, hour, minute, second) =
+                worldtime_parser::parse::<()>(&buf[..n]).unwrap().1;
+
+            let date = DateTime {
+                year,
+                month,
+                day,
+                day_of_week: embassy_rp::rtc::DayOfWeek::Monday,
+                hour,
+                minute,
+                second,
+            };
+
+            info!("worldtime: {:#?}", Debug2Format(&date));
+            rtc.set_datetime(date).unwrap()
+        }
+        Err(e) => error!("failed to get worldtime: {}", e),
+    };
+}
+
+async fn resolve_dns<D>(stack: &Stack<D>, host: &str) -> Result<embassy_net::IpAddress, dns::Error>
+where
+    D: embassy_net::driver::Driver,
+{
+    let query = stack.dns_query(host, DnsQueryType::A);
+    let address = query.await?.first().cloned().ok_or(dns::Error::Failed)?;
+    info!("DNS resolution: {} - {}", host, address);
+    Ok(address)
 }
 
 #[derive(defmt::Format)]
@@ -253,4 +293,11 @@ async fn wait_for_config<D: embassy_net::driver::Driver + 'static>(
         }
         yield_now().await;
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Format)]
+enum BinColour {
+    Blue,
+    Green,
+    Black,
 }
