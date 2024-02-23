@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
 #![feature(type_alias_impl_trait)]
-#![feature(async_fn_in_trait)]
 #![allow(incomplete_features)]
 
 use cyw43_pio::PioSpi;
@@ -20,7 +19,7 @@ use embassy_rp::rtc::{DateTime, Rtc};
 use embassy_time::{Duration, Timer};
 use embedded_io_async::Write;
 use rand::RngCore;
-use static_cell::make_static;
+use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
@@ -69,7 +68,8 @@ async fn main(spawner: Spawner) {
         p.DMA_CH0,
     );
 
-    let state = make_static!(cyw43::State::new());
+    static STATE: StaticCell<cyw43::State> = StaticCell::new();
+    let state = STATE.init(cyw43::State::new());
     let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw).await;
     unwrap!(spawner.spawn(wifi_task(runner)));
 
@@ -81,11 +81,14 @@ async fn main(spawner: Spawner) {
     let config = Config::dhcpv4(Default::default());
 
     // Init network stack
-    let stack = &*make_static!(Stack::new(
+    const SOCK_COUNT: usize = 8;
+    static STACK: StaticCell<Stack<cyw43::NetDriver<'static>>> = StaticCell::new();
+    static RESOURCES: StaticCell<StackResources<SOCK_COUNT>> = StaticCell::new();
+    let stack = &*STACK.init(Stack::new(
         net_device,
         config,
-        make_static!(StackResources::<3>::new()),
-        RoscRng.next_u64()
+        RESOURCES.init(StackResources::<SOCK_COUNT>::new()),
+        RoscRng.next_u64(),
     ));
 
     unwrap!(spawner.spawn(net_task(stack)));
@@ -144,84 +147,75 @@ where
     info!("{}: {}", servicelayer3c_host, servicelayer3c_address);
     info!("Addresses resolved");
 
+    let mut socket = embassy_net::tcp::TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
+    socket.set_timeout(Some(Duration::from_secs(10)));
+
+    control.gpio_set(0, false).await;
+
     loop {
-        let mut socket = embassy_net::tcp::TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-        socket.set_timeout(Some(Duration::from_secs(10)));
+        // http://worldtimeapi.org/api/ip.txt
+        match http_get(
+            (worldtime_address, 80),
+            worldtime_host,
+            "/api/ip.txt",
+            &mut socket,
+            &mut buf,
+        )
+        .await
+        {
+            Ok(n) => {
+                let (year, month, day, hour, minute, second) =
+                    worldtime_parser::parse::<()>(&buf[..n]).unwrap().1;
 
-        control.gpio_set(0, false).await;
+                let date = DateTime {
+                    year,
+                    month,
+                    day,
+                    day_of_week: embassy_rp::rtc::DayOfWeek::Monday,
+                    hour,
+                    minute,
+                    second,
+                };
 
-        loop {
-            // http://worldtimeapi.org/api/ip.txt
-            match http_get(
-                (worldtime_address, 80),
-                worldtime_host,
-                "/api/ip.txt",
-                &mut socket,
-                &mut buf,
-            )
-            .await
-            {
-                Ok(n) => {
-                    let (year, month, day, hour, minute, second) =
-                        worldtime_parser::parse::<()>(&buf[..n]).unwrap().1;
+                info!("worldtime: {:#?}", Debug2Format(&date));
+                rtc.set_datetime(date).unwrap()
+            }
+            Err(e) => error!("failed to get worldtime: {}", e),
+        };
 
-                    let date = DateTime {
-                        year,
-                        month,
-                        day,
-                        day_of_week: embassy_rp::rtc::DayOfWeek::Monday,
-                        hour,
-                        minute,
-                        second,
-                    };
-
-                    info!("worldtime: {:#?}", Debug2Format(&date));
-                    rtc.set_datetime(date).unwrap()
+        // http://servicelayer3c.azure-api.net/wastecalendar/calendar/ical/200004185983
+        match http_get(
+            (servicelayer3c_address, 80),
+            servicelayer3c_host,
+            "/wastecalendar/calendar/ical/200004185983",
+            &mut socket,
+            &mut buf,
+        )
+        .await
+        {
+            Ok(n) => {
+                for (a, b) in
+                    &mut nom::combinator::iterator(&buf[..n], ical_parser::parse_event::<()>)
+                {
+                    println!("{} {}", a, core::str::from_utf8(b).unwrap());
                 }
-                Err(e) => error!("failed to get worldtime: {}", e),
-            };
+            }
+            Err(e) => error!("failed to get worldtime: {}", e),
+        };
 
-            // http://servicelayer3c.azure-api.net/wastecalendar/calendar/ical/200004185983
-            match http_get(
-                (servicelayer3c_address, 80),
-                servicelayer3c_host,
-                "/wastecalendar/calendar/ical/200004185983",
-                &mut socket,
-                &mut buf,
-            )
-            .await
-            {
-                Ok(n) => {
-                    for (a, b) in
-                        &mut nom::combinator::iterator(&buf[..n], ical_parser::parse_event::<()>)
-                    {
-                        println!("{} {}", a, core::str::from_utf8(b).unwrap());
-                    }
-                }
-                Err(e) => error!("failed to get worldtime: {}", e),
-            };
-
-            Timer::after(Duration::from_secs(10)).await;
-        }
+        Timer::after(Duration::from_secs(10)).await;
     }
 }
 
 #[derive(defmt::Format)]
 enum HttpClientError {
     Connect(embassy_net::tcp::ConnectError),
-    Write(embedded_io_async::WriteAllError<embassy_net::tcp::Error>),
     Error(embassy_net::tcp::Error),
 }
 
 impl From<embassy_net::tcp::ConnectError> for HttpClientError {
     fn from(value: embassy_net::tcp::ConnectError) -> Self {
         Self::Connect(value)
-    }
-}
-
-impl From<embedded_io_async::WriteAllError<embassy_net::tcp::Error>> for HttpClientError {
-    fn from(value: embedded_io_async::WriteAllError<embassy_net::tcp::Error>) -> Self {
-        Self::Write(value)
     }
 }
 
