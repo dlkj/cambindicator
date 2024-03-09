@@ -14,7 +14,7 @@ use embassy_rp::bind_interrupts;
 use embassy_rp::clocks::RoscRng;
 use embassy_rp::gpio::{Level, Output};
 use embassy_rp::peripherals::{DMA_CH0, PIN_23, PIN_25, PIO0, PIO1};
-use embassy_rp::pio::{InterruptHandler, Pio};
+use embassy_rp::pio::{Instance, InterruptHandler, Pio};
 use embassy_rp::rtc::{DateTime, Rtc};
 use embassy_time::{Duration, Timer};
 use embedded_io_async::Write;
@@ -31,6 +31,7 @@ const WIFI_PASSWORD: &str = env!("WIFI_PASSWORD");
 
 const WORLDTIME_HOST: &str = "worldtimeapi.org";
 const SERVICELAYER3C_HOST: &str = "servicelayer3c.azure-api.net";
+const NUM_LEDS: usize = 3;
 
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
@@ -60,6 +61,17 @@ async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     let mut rtc = Rtc::new(p.RTC);
 
+    let mut pio1 = Pio::new(p.PIO1, Irqs);
+    let mut led_data = [RGB8::default(); NUM_LEDS];
+    let mut ws2812 = Ws2812::new(&mut pio1.common, pio1.sm0, p.DMA_CH1, p.PIN_16);
+
+    info!("Init LEDs");
+    led_data[0] = RGB8::new(25, 0, 0);
+    led_data[1] = RGB8::new(0, 25, 0);
+    led_data[2] = RGB8::new(0, 0, 25);
+    ws2812.write(&led_data).await;
+
+    info!("Init cyw43");
     let fw = include_bytes!("../../cyw43-firmware/43439A0.bin");
     let clm = include_bytes!("../../cyw43-firmware/43439A0_clm.bin");
 
@@ -76,18 +88,17 @@ async fn main(spawner: Spawner) {
         p.DMA_CH0,
     );
 
-    let mut pio1 = Pio::new(p.PIO1, Irqs);
-    const NUM_LEDS: usize = 3;
-    let mut led_data = [RGB8::default(); NUM_LEDS];
-    let mut ws2812 = Ws2812::new(&mut pio1.common, pio1.sm0, p.DMA_CH1, p.PIN_16);
-    led_data[0] = RGB8::new(255, 0, 0);
-    led_data[1] = RGB8::new(0, 255, 0);
-    led_data[2] = RGB8::new(0, 0, 255);
-    ws2812.write(&led_data).await;
-
     static STATE: StaticCell<cyw43::State> = StaticCell::new();
     let state = STATE.init(cyw43::State::new());
     let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw).await;
+
+    led_data[0] = RGB8::new(25, 0, 25);
+    led_data[1] = RGB8::new(25, 0, 0);
+    led_data[2] = RGB8::new(25, 0, 0);
+    ws2812.write(&led_data).await;
+
+    info!("Init network");
+
     unwrap!(spawner.spawn(wifi_task(runner)));
 
     control.init(clm).await;
@@ -101,7 +112,7 @@ async fn main(spawner: Spawner) {
     const SOCK_COUNT: usize = 8;
     static STACK: StaticCell<Stack<cyw43::NetDriver<'static>>> = StaticCell::new();
     static RESOURCES: StaticCell<StackResources<SOCK_COUNT>> = StaticCell::new();
-    let stack = &*STACK.init(Stack::new(
+    let stack = STACK.init(Stack::new(
         net_device,
         config,
         RESOURCES.init(StackResources::<SOCK_COUNT>::new()),
@@ -109,6 +120,13 @@ async fn main(spawner: Spawner) {
     ));
 
     unwrap!(spawner.spawn(net_task(stack)));
+
+    led_data[0] = RGB8::new(0, 25, 0);
+    led_data[1] = RGB8::new(25, 0, 25);
+    led_data[2] = RGB8::new(25, 0, 0);
+    ws2812.write(&led_data).await;
+
+    info!("Join WIFI");
 
     loop {
         match control.join_wpa2(WIFI_SSID, WIFI_PASSWORD).await {
@@ -124,11 +142,19 @@ async fn main(spawner: Spawner) {
     let local_addr = cfg.address.address();
     info!("IP address: {:?}", local_addr);
 
-    client(stack, &mut rtc, &mut control).await
+    led_data[0] = RGB8::new(0, 25, 0);
+    led_data[1] = RGB8::new(0, 25, 0);
+    led_data[2] = RGB8::new(0, 0, 0);
+    ws2812.write(&led_data).await;
+
+    info!("Start main loop");
+
+    client(stack, &mut ws2812, &mut rtc, &mut control).await
 }
 
-async fn client<D>(
+async fn client<D, PIO: Instance, const SM: usize>(
     stack: &Stack<D>,
+    ws2812: &mut Ws2812<'_, PIO, SM, NUM_LEDS>,
     rtc: &mut Rtc<'_, embassy_rp::peripherals::RTC>,
     control: &mut cyw43::Control<'_>,
 ) -> !
@@ -151,6 +177,7 @@ where
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
     let mut buf = [0; 4096];
+    let mut led_data = [RGB8::default(); NUM_LEDS];
 
     let mut socket = embassy_net::tcp::TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
     socket.set_timeout(Some(Duration::from_secs(10)));
@@ -158,8 +185,16 @@ where
     control.gpio_set(0, false).await;
 
     loop {
+        led_data[0] = RGB8::new(0, 25, 0);
+        led_data[1] = RGB8::new(0, 25, 0);
+        led_data[2] = RGB8::new(25, 0, 25);
+        ws2812.write(&led_data).await;
         set_rtc(stack, &mut socket, &mut buf, rtc).await;
-        let calendar = get_calendar(stack, &mut socket, &mut buf).await;
+        let _calendar = get_calendar(stack, &mut socket, &mut buf).await;
+        led_data[0] = RGB8::new(0, 25, 0);
+        led_data[1] = RGB8::new(0, 25, 0);
+        led_data[2] = RGB8::new(0, 25, 0);
+        ws2812.write(&led_data).await;
 
         Timer::after(Duration::from_secs(60)).await;
     }
