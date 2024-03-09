@@ -234,6 +234,7 @@ where
 
                     (time, bin)
                 })
+                .take(16)
                 .collect();
 
         for (a, b) in &values {
