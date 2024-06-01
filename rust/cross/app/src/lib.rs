@@ -1,11 +1,13 @@
 #![no_std]
 
 use core::{convert::From, default::Default};
+use defmt::{write, Format};
 use embassy_rp::{
     clocks,
     dma::{AnyChannel, Channel},
     into_ref,
     pio::{Common, Config, FifoJoin, Instance, PioPin, ShiftConfig, ShiftDirection, StateMachine},
+    rtc::DateTime,
     Peripheral, PeripheralRef,
 };
 use embassy_time::Timer;
@@ -101,5 +103,82 @@ impl<'d, PIO: Instance, const SM: usize, const N: usize> Ws2812<'d, PIO, SM, N> 
         self.sm.tx().dma_push(self.dma.reborrow(), &words).await;
 
         Timer::after_micros(55).await;
+    }
+}
+
+pub struct Date {
+    /// 0..4095
+    pub year: u16,
+    /// 1..12, 1 is January
+    pub month: u8,
+    /// 1..28,29,30,31 depending on month
+    pub day: u8,
+}
+
+impl From<&DateTime> for Date {
+    fn from(date_time: &DateTime) -> Self {
+        Self {
+            year: date_time.year,
+            month: date_time.month,
+            day: date_time.day,
+        }
+    }
+}
+
+impl Format for Date {
+    fn format(&self, fmt: defmt::Formatter) {
+        write!(
+            fmt,
+            "Date({:04}-{:02}-{:02})",
+            self.year, self.month, self.day
+        );
+    }
+}
+
+impl Date {
+    pub fn tomorrow(&self) -> Date {
+        let (new_year, new_month, new_day) = if self.day == self.days_in_current_month() {
+            if self.month == 12 {
+                (self.year + 1, 1, 1)
+            } else {
+                (self.year, self.month + 1, 1)
+            }
+        } else {
+            (self.year, self.month, self.day + 1)
+        };
+
+        Self {
+            year: new_year,
+            month: new_month,
+            day: new_day,
+        }
+    }
+
+    fn is_leap_year(year: u16) -> bool {
+        (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+    }
+
+    fn days_in_current_month(&self) -> u8 {
+        match self.month {
+            1 => 31,
+            2 => {
+                if Self::is_leap_year(self.year) {
+                    29
+                } else {
+                    28
+                }
+            }
+            3 => 31,
+            4 => 30,
+            5 => 31,
+            6 => 30,
+            7 => 31,
+            8 => 31,
+            9 => 30,
+            10 => 31,
+            11 => 30,
+            12 => 31,
+            _ => 0,
+        }
     }
 }

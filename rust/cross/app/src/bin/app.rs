@@ -24,7 +24,7 @@ use smart_leds::RGB8;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
-use cambindicator::Ws2812;
+use cambindicator::{Date, Ws2812};
 
 const WIFI_SSID: &str = env!("WIFI_SSID");
 const WIFI_PASSWORD: &str = env!("WIFI_PASSWORD");
@@ -190,11 +190,22 @@ where
         led_data[2] = RGB8::new(25, 0, 25);
         ws2812.write(&led_data).await;
         set_rtc(stack, &mut socket, &mut buf, rtc).await;
-        let _calendar = get_calendar(stack, &mut socket, &mut buf).await;
+        let calendar = get_calendar(stack, &mut socket, &mut buf)
+            .await
+            .unwrap_or_default();
         led_data[0] = RGB8::new(0, 25, 0);
         led_data[1] = RGB8::new(0, 25, 0);
         led_data[2] = RGB8::new(0, 25, 0);
         ws2812.write(&led_data).await;
+
+        let now: Date = (&rtc.now().unwrap()).into();
+
+        let tomorrow = now.tomorrow();
+
+        println!(
+            "\n\nCurrent time: {}\nTomorrow: {}\nnext bin: {}\n",
+            now, tomorrow, calendar[0]
+        );
 
         Timer::after(Duration::from_secs(60)).await;
     }
@@ -204,7 +215,7 @@ async fn get_calendar<D>(
     stack: &Stack<D>,
     socket: &mut TcpSocket<'_>,
     buf: &mut [u8; 4096],
-) -> Result<Vec<(u32, BinColour), 16>, HttpClientError>
+) -> Result<Vec<(Date, BinColour), 16>, HttpClientError>
 where
     D: embassy_net::driver::Driver,
 {
@@ -223,7 +234,7 @@ where
     .map(|n| {
         let values: Vec<_, 16> =
             nom::combinator::iterator(&buf[..n], ical_parser::parse_event::<()>)
-                .map(|(time, bin)| {
+                .map(|((year, month, day), bin)| {
                     let bin = if bin.starts_with(b"Black") {
                         BinColour::Black
                     } else if bin.starts_with(b"Blue") {
@@ -232,7 +243,7 @@ where
                         BinColour::Green
                     };
 
-                    (time, bin)
+                    (Date { year, month, day }, bin)
                 })
                 .take(16)
                 .collect();

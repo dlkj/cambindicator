@@ -9,7 +9,7 @@ authors = ["Daniel Kenyon-Jones"]
 
 [dependencies]
 embassy-embedded-hal = { version = "0.1.0", features = [] }
-embassy-sync = { version = "0.5.0", features = [] }
+embassy-sync = { version = "0.6.0", features = [] }
 embassy-executor = { version = "0.5.0", features = [
     "task-arena-size-32768",
     "arch-cortex-m",

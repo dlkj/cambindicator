@@ -1,15 +1,14 @@
 #![cfg_attr(not(test), no_std)]
 use nom::{
-    bytes::complete::tag,
-    bytes::complete::take_until,
-    character::complete::not_line_ending,
-    character::complete::u32,
+    bytes::complete::{tag, take, take_until},
+    character::complete::{not_line_ending, u16, u8},
+    combinator::map_parser,
     error::ParseError,
     sequence::{pair, preceded, tuple},
     IResult, Parser,
 };
 
-pub fn parse_event<'a, E>(input: &'a [u8]) -> IResult<&'a [u8], (u32, &'a [u8]), E>
+pub fn parse_event<'a, E>(input: &'a [u8]) -> IResult<&'a [u8], ((u16, u8, u8), &'a [u8]), E>
 where
     E: ParseError<&'a [u8]>,
 {
@@ -19,7 +18,7 @@ where
                 take_until("DTSTART;VALUE=DATE:"),
                 tag("DTSTART;VALUE=DATE:"),
             ),
-            u32,
+            parse_date,
         ),
         preceded(
             pair(take_until("SUMMARY:"), tag("SUMMARY:")),
@@ -27,6 +26,27 @@ where
         ),
     ))
     .parse(input)
+}
+
+pub fn parse_date<'a, E>(input: &'a [u8]) -> IResult<&'a [u8], (u16, u8, u8), E>
+where
+    E: ParseError<&'a [u8]>,
+{
+    tuple((parse_dec4, parse_dec2, parse_dec2)).parse(input)
+}
+
+pub fn parse_dec4<'a, E>(input: &'a [u8]) -> IResult<&'a [u8], u16, E>
+where
+    E: ParseError<&'a [u8]>,
+{
+    map_parser(take(4usize), u16)(input)
+}
+
+pub fn parse_dec2<'a, E>(input: &'a [u8]) -> IResult<&'a [u8], u8, E>
+where
+    E: ParseError<&'a [u8]>,
+{
+    map_parser(take(2usize), u8)(input)
 }
 
 #[cfg(test)]
@@ -59,9 +79,38 @@ END:VEVENT\n
 END:VCALENDAR";
 
     #[test]
-    fn test() {
-        for (a, b) in &mut iterator(RESPONSE_BYTES.as_bytes(), crate::parse_event::<()>) {
-            println!("{} {}", a, core::str::from_utf8(b).unwrap());
-        }
+    fn parse_event_test() {
+        let dates: Vec<_> = iterator(
+            RESPONSE_BYTES.as_bytes(),
+            crate::parse_event::<nom::error::Error<&'_ [u8]>>,
+        )
+        .collect();
+
+        assert!(!dates.is_empty());
+        assert_eq!(
+            dates[0],
+            ((2023, 08, 18), "Black Bin Collection".as_bytes())
+        );
+        assert_eq!(
+            dates[1],
+            ((2023, 08, 25), "Green Bin Collection".as_bytes())
+        );
+    }
+
+    #[test]
+    fn parse_date_test() {
+        assert_eq!(
+            crate::parse_date::<nom::error::Error<&'_ [u8]>>("2023081855some_more_text".as_bytes())
+                .unwrap(),
+            ("55some_more_text".as_bytes(), (2023, 08, 18))
+        );
+    }
+
+    #[test]
+    fn parse_dec4() {
+        assert_eq!(
+            crate::parse_dec4::<nom::error::Error<&'_ [u8]>>("202324".as_bytes()).unwrap(),
+            ("24".as_bytes(), 2023)
+        );
     }
 }
