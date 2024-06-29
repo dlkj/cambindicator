@@ -106,6 +106,7 @@ impl<'d, PIO: Instance, const SM: usize, const N: usize> Ws2812<'d, PIO, SM, N> 
     }
 }
 
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub struct Date {
     /// 0..4095
     pub year: u16,

@@ -198,14 +198,57 @@ where
         led_data[2] = RGB8::new(0, 25, 0);
         ws2812.write(&led_data).await;
 
-        let now: Date = (&rtc.now().unwrap()).into();
+        let now_date: Date = (&rtc.now().unwrap()).into();
 
-        let tomorrow = now.tomorrow();
+        let tomorrow = now_date.tomorrow();
 
-        println!(
-            "\n\nCurrent time: {}\nTomorrow: {}\nnext bin: {}\n",
-            now, tomorrow, calendar[0]
-        );
+        println!("\n\nCurrent time: {}\nTomorrow: {}", now_date, tomorrow);
+
+        // list all of tomorrows calendar items
+        let tomorrow_bins: Vec<BinColour, 16> = calendar
+            .iter()
+            .filter_map(|&(d, c)| if d == tomorrow { Some(c) } else { None })
+            .collect();
+
+        // if it is between 1800 and 2400
+
+        let now = rtc.now().unwrap();
+        if now.hour > 18 {
+            //do a light show
+            match tomorrow_bins.len() {
+                0 => {
+                    led_data[0] = RGB8::new(0, 0, 0);
+                    led_data[1] = RGB8::new(0, 0, 0);
+                    led_data[2] = RGB8::new(0, 0, 0);
+                }
+                1 => {
+                    led_data[0] = tomorrow_bins[0].into();
+                    led_data[1] = tomorrow_bins[0].into();
+                    led_data[2] = tomorrow_bins[0].into();
+                }
+                2 => {
+                    led_data[0] = tomorrow_bins[0].into();
+                    led_data[1] = RGB8::new(0, 0, 0);
+                    led_data[2] = tomorrow_bins[1].into();
+                }
+                3 => {
+                    led_data[0] = tomorrow_bins[0].into();
+                    led_data[1] = tomorrow_bins[1].into();
+                    led_data[2] = tomorrow_bins[2].into();
+                }
+                _ => {
+                    led_data[0] = RGB8::new(25, 0, 0);
+                    led_data[1] = RGB8::new(25, 0, 0);
+                    led_data[2] = RGB8::new(25, 0, 0);
+                }
+            }
+        } else {
+            led_data[0] = RGB8::new(0, 0, 0);
+            led_data[1] = RGB8::new(0, 0, 0);
+            led_data[2] = RGB8::new(0, 0, 0);
+        }
+
+        ws2812.write(&led_data).await;
 
         Timer::after(Duration::from_secs(60)).await;
     }
@@ -359,9 +402,19 @@ async fn wait_for_config<D: embassy_net::driver::Driver + 'static>(
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Format)]
+#[derive(Clone, Copy, PartialEq, Eq, Format)]
 enum BinColour {
     Blue,
     Green,
     Black,
+}
+
+impl From<BinColour> for RGB8 {
+    fn from(value: BinColour) -> Self {
+        match value {
+            BinColour::Blue => RGB8::new(0, 0, 255),
+            BinColour::Green => RGB8::new(0, 255, 0),
+            BinColour::Black => RGB8::new(255, 255, 255),
+        }
+    }
 }
