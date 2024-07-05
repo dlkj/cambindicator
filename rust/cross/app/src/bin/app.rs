@@ -15,7 +15,7 @@ use embassy_rp::clocks::RoscRng;
 use embassy_rp::gpio::{Level, Output};
 use embassy_rp::peripherals::{DMA_CH0, PIN_23, PIN_25, PIO0, PIO1};
 use embassy_rp::pio::{Instance, InterruptHandler, Pio};
-use embassy_rp::rtc::{DateTime, Rtc};
+use embassy_rp::rtc::{DateTime, Rtc, RtcError};
 use embassy_time::{Duration, Timer};
 use embedded_io_async::Write;
 use heapless::Vec;
@@ -32,6 +32,17 @@ const WIFI_PASSWORD: &str = env!("WIFI_PASSWORD");
 const WORLDTIME_HOST: &str = "worldtimeapi.org";
 const SERVICELAYER3C_HOST: &str = "servicelayer3c.azure-api.net";
 const NUM_LEDS: usize = 3;
+
+const RED: RGB8 = RGB8::new(255, 0, 0);
+const GREEN: RGB8 = RGB8::new(0, 255, 0);
+const BLUE: RGB8 = RGB8::new(0, 0, 255);
+const WHITE: RGB8 = RGB8::new(255, 255, 255);
+const BLACK: RGB8 = RGB8::new(0, 0, 0);
+
+const RED_DIM: RGB8 = RGB8::new(1, 0, 0);
+const GREEN_DIM: RGB8 = RGB8::new(0, 1, 0);
+const BLUE_DIM: RGB8 = RGB8::new(0, 0, 1);
+const WHITE_DIM: RGB8 = RGB8::new(1, 1, 1);
 
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
@@ -62,14 +73,10 @@ async fn main(spawner: Spawner) {
     let mut rtc = Rtc::new(p.RTC);
 
     let mut pio1 = Pio::new(p.PIO1, Irqs);
-    let mut led_data = [RGB8::default(); NUM_LEDS];
     let mut ws2812 = Ws2812::new(&mut pio1.common, pio1.sm0, p.DMA_CH1, p.PIN_16);
 
     info!("Init LEDs");
-    led_data[0] = RGB8::new(25, 0, 0);
-    led_data[1] = RGB8::new(0, 25, 0);
-    led_data[2] = RGB8::new(0, 0, 25);
-    ws2812.write(&led_data).await;
+    ws2812.write(&[GREEN_DIM, BLACK, BLACK]).await;
 
     info!("Init cyw43");
     let fw = include_bytes!("../../cyw43-firmware/43439A0.bin");
@@ -92,10 +99,7 @@ async fn main(spawner: Spawner) {
     let state = STATE.init(cyw43::State::new());
     let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw).await;
 
-    led_data[0] = RGB8::new(25, 0, 25);
-    led_data[1] = RGB8::new(25, 0, 0);
-    led_data[2] = RGB8::new(25, 0, 0);
-    ws2812.write(&led_data).await;
+    ws2812.write(&[BLACK, GREEN_DIM, BLACK]).await;
 
     info!("Init network");
 
@@ -121,10 +125,7 @@ async fn main(spawner: Spawner) {
 
     unwrap!(spawner.spawn(net_task(stack)));
 
-    led_data[0] = RGB8::new(0, 25, 0);
-    led_data[1] = RGB8::new(25, 0, 25);
-    led_data[2] = RGB8::new(25, 0, 0);
-    ws2812.write(&led_data).await;
+    ws2812.write(&[BLACK, BLACK, GREEN_DIM]).await;
 
     info!("Join WIFI");
 
@@ -133,34 +134,22 @@ async fn main(spawner: Spawner) {
             Ok(_) => break,
             Err(err) => {
                 info!("join failed with status={}", err.status);
+                ws2812.write(&[BLACK, RED_DIM, GREEN_DIM]).await;
             }
         }
     }
+
+    ws2812.write(&[GREEN_DIM, BLACK, GREEN_DIM]).await;
 
     info!("Waiting for DHCP...");
     let cfg = wait_for_config(stack).await;
     let local_addr = cfg.address.address();
     info!("IP address: {:?}", local_addr);
 
-    led_data[0] = RGB8::new(0, 25, 0);
-    led_data[1] = RGB8::new(0, 25, 0);
-    led_data[2] = RGB8::new(0, 0, 0);
-    ws2812.write(&led_data).await;
+    ws2812.write(&[BLACK, BLACK, BLACK]).await;
 
     info!("Start main loop");
 
-    client(stack, &mut ws2812, &mut rtc, &mut control).await
-}
-
-async fn client<D, PIO: Instance, const SM: usize>(
-    stack: &Stack<D>,
-    ws2812: &mut Ws2812<'_, PIO, SM, NUM_LEDS>,
-    rtc: &mut Rtc<'_, embassy_rp::peripherals::RTC>,
-    control: &mut cyw43::Control<'_>,
-) -> !
-where
-    D: embassy_net::driver::Driver + 'static,
-{
     /*
      * # Every hour
      *
@@ -177,93 +166,91 @@ where
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
     let mut buf = [0; 4096];
-    let mut led_data = [RGB8::default(); NUM_LEDS];
 
     let mut socket = embassy_net::tcp::TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
     socket.set_timeout(Some(Duration::from_secs(10)));
 
-    control.gpio_set(0, false).await;
-
     loop {
-        led_data[0] = RGB8::new(0, 25, 0);
-        led_data[1] = RGB8::new(0, 25, 0);
-        led_data[2] = RGB8::new(25, 0, 25);
-        ws2812.write(&led_data).await;
-        set_rtc(stack, &mut socket, &mut buf, rtc).await;
-        let calendar = get_calendar(stack, &mut socket, &mut buf)
+        match client_tick(stack, &mut ws2812, &mut rtc, &mut socket, &mut buf)
             .await
-            .unwrap_or_default();
-        led_data[0] = RGB8::new(0, 25, 0);
-        led_data[1] = RGB8::new(0, 25, 0);
-        led_data[2] = RGB8::new(0, 25, 0);
-        ws2812.write(&led_data).await;
-
-        let now_date: Date = (&rtc.now().unwrap()).into();
-
-        let tomorrow = now_date.tomorrow();
-
-        println!("\n\nCurrent time: {}\nTomorrow: {}", now_date, tomorrow);
-
-        // list all of tomorrows calendar items
-        let tomorrow_bins: Vec<BinColour, 16> = calendar
-            .iter()
-            .filter_map(|&(d, c)| if d == tomorrow { Some(c) } else { None })
-            .collect();
-
-        // if it is between 1800 and 2400
-
-        let now = rtc.now().unwrap();
-        if now.hour > 18 {
-            //do a light show
-            match tomorrow_bins.len() {
-                0 => {
-                    led_data[0] = RGB8::new(0, 0, 0);
-                    led_data[1] = RGB8::new(0, 0, 0);
-                    led_data[2] = RGB8::new(0, 0, 0);
-                }
-                1 => {
-                    led_data[0] = tomorrow_bins[0].into();
-                    led_data[1] = tomorrow_bins[0].into();
-                    led_data[2] = tomorrow_bins[0].into();
-                }
-                2 => {
-                    led_data[0] = tomorrow_bins[0].into();
-                    led_data[1] = RGB8::new(0, 0, 0);
-                    led_data[2] = tomorrow_bins[1].into();
-                }
-                3 => {
-                    led_data[0] = tomorrow_bins[0].into();
-                    led_data[1] = tomorrow_bins[1].into();
-                    led_data[2] = tomorrow_bins[2].into();
-                }
-                _ => {
-                    led_data[0] = RGB8::new(25, 0, 0);
-                    led_data[1] = RGB8::new(25, 0, 0);
-                    led_data[2] = RGB8::new(25, 0, 0);
-                }
+            .inspect_err(|e| defmt::error!("Client tick: {}", e))
+        {
+            Ok(_) => {}
+            Err(ClientError::Http(HttpError::Dns(_))) => {
+                ws2812.write(&[RED_DIM, BLUE_DIM, WHITE_DIM]).await
             }
-        } else {
-            led_data[0] = RGB8::new(0, 0, 0);
-            led_data[1] = RGB8::new(0, 0, 0);
-            led_data[2] = RGB8::new(0, 0, 0);
-        }
-
-        ws2812.write(&led_data).await;
+            Err(ClientError::Http(_)) => ws2812.write(&[RED_DIM, BLACK, WHITE_DIM]).await,
+            Err(ClientError::Rtc(_)) => ws2812.write(&[RED_DIM, BLACK, BLUE_DIM]).await,
+        };
 
         Timer::after(Duration::from_secs(60)).await;
     }
+}
+
+async fn client_tick<D, PIO: Instance, const SM: usize>(
+    stack: &Stack<D>,
+    ws2812: &mut Ws2812<'_, PIO, SM, NUM_LEDS>,
+    rtc: &mut Rtc<'_, embassy_rp::peripherals::RTC>,
+    socket: &mut TcpSocket<'_>,
+    buf: &mut [u8; 4096],
+) -> Result<(), ClientError>
+where
+    D: embassy_net::driver::Driver + 'static,
+{
+    let date = get_datetime(stack, socket, buf).await?;
+    rtc.set_datetime(date)?;
+
+    let calendar = get_calendar(stack, socket, buf).await.unwrap_or_default();
+    for (a, b) in &calendar {
+        println!("{} {}", a, b);
+    }
+
+    let now = rtc.now()?;
+    let now_date: Date = (&now).into();
+
+    let tomorrow = now_date.tomorrow();
+
+    println!("\n\nCurrent time: {}\nTomorrow: {}", now_date, tomorrow);
+
+    // list all of tomorrows calendar items
+    let tomorrow_bins: Vec<BinColour, 16> = calendar
+        .iter()
+        .filter_map(|&(d, c)| if d == tomorrow { Some(c) } else { None })
+        .collect();
+
+    // if it is between 1800 and 2400
+    let led_data = if now.hour > 18 {
+        //do a light show
+        match tomorrow_bins.len() {
+            0 => [BLACK; 3],
+            1 => [tomorrow_bins[0].into(); 3],
+            2 => [tomorrow_bins[0].into(), BLACK, tomorrow_bins[1].into()],
+            3 => [
+                tomorrow_bins[0].into(),
+                tomorrow_bins[1].into(),
+                tomorrow_bins[2].into(),
+            ],
+            _ => [RED; 3],
+        }
+    } else {
+        [BLACK; 3]
+    };
+
+    ws2812.write(&led_data).await;
+
+    Ok(())
 }
 
 async fn get_calendar<D>(
     stack: &Stack<D>,
     socket: &mut TcpSocket<'_>,
     buf: &mut [u8; 4096],
-) -> Result<Vec<(Date, BinColour), 16>, HttpClientError>
+) -> Result<Vec<(Date, BinColour), 16>, HttpError>
 where
     D: embassy_net::driver::Driver,
 {
     // Update dns resolution
-    let servicelayer3c_address = resolve_dns(stack, SERVICELAYER3C_HOST).await.unwrap();
+    let servicelayer3c_address = resolve_dns(stack, SERVICELAYER3C_HOST).await?;
 
     // http://servicelayer3c.azure-api.net/wastecalendar/calendar/ical/200004185983
     http_get(
@@ -275,42 +262,36 @@ where
     )
     .await
     .map(|n| {
-        let values: Vec<_, 16> =
-            nom::combinator::iterator(&buf[..n], ical_parser::parse_event::<()>)
-                .map(|((year, month, day), bin)| {
-                    let bin = if bin.starts_with(b"Black") {
-                        BinColour::Black
-                    } else if bin.starts_with(b"Blue") {
-                        BinColour::Blue
-                    } else {
-                        BinColour::Green
-                    };
+        nom::combinator::iterator(&buf[..n], ical_parser::parse_event::<()>)
+            .map(|((year, month, day), bin)| {
+                let bin = if bin.starts_with(b"Black") {
+                    BinColour::Black
+                } else if bin.starts_with(b"Blue") {
+                    BinColour::Blue
+                } else {
+                    BinColour::Green
+                };
 
-                    (Date { year, month, day }, bin)
-                })
-                .take(16)
-                .collect();
-
-        for (a, b) in &values {
-            println!("{} {}", a, b);
-        }
-        values
+                (Date { year, month, day }, bin)
+            })
+            .take(16)
+            .collect()
     })
 }
 
-async fn set_rtc<D>(
+async fn get_datetime<D>(
     stack: &Stack<D>,
     socket: &mut TcpSocket<'_>,
     buf: &mut [u8; 4096],
-    rtc: &mut Rtc<'_, embassy_rp::peripherals::RTC>,
-) where
+) -> Result<DateTime, HttpError>
+where
     D: embassy_net::driver::Driver,
 {
     // Update dns resolution
-    let worldtime_address = resolve_dns(stack, WORLDTIME_HOST).await.unwrap();
+    let worldtime_address = resolve_dns(stack, WORLDTIME_HOST).await?;
 
     // http://worldtimeapi.org/api/ip.txt
-    match http_get(
+    http_get(
         (worldtime_address, 80),
         WORLDTIME_HOST,
         "/api/ip.txt",
@@ -318,26 +299,20 @@ async fn set_rtc<D>(
         buf,
     )
     .await
-    {
-        Ok(n) => {
-            let (year, month, day, hour, minute, second) =
-                worldtime_parser::parse::<()>(&buf[..n]).unwrap().1;
+    .map(|n| {
+        let (year, month, day, hour, minute, second) =
+            worldtime_parser::parse::<()>(&buf[..n]).unwrap().1;
 
-            let date = DateTime {
-                year,
-                month,
-                day,
-                day_of_week: embassy_rp::rtc::DayOfWeek::Monday,
-                hour,
-                minute,
-                second,
-            };
-
-            info!("worldtime: {:#?}", Debug2Format(&date));
-            rtc.set_datetime(date).unwrap()
+        DateTime {
+            year,
+            month,
+            day,
+            day_of_week: embassy_rp::rtc::DayOfWeek::Monday,
+            hour,
+            minute,
+            second,
         }
-        Err(e) => error!("failed to get worldtime: {}", e),
-    };
+    })
 }
 
 async fn resolve_dns<D>(stack: &Stack<D>, host: &str) -> Result<embassy_net::IpAddress, dns::Error>
@@ -351,20 +326,58 @@ where
 }
 
 #[derive(defmt::Format)]
-enum HttpClientError {
-    Connect(embassy_net::tcp::ConnectError),
-    Error(embassy_net::tcp::Error),
+enum HttpError {
+    TcpConnect(embassy_net::tcp::ConnectError),
+    Tcp(embassy_net::tcp::Error),
+    Dns(embassy_net::dns::Error),
 }
 
-impl From<embassy_net::tcp::ConnectError> for HttpClientError {
+impl From<embassy_net::tcp::ConnectError> for HttpError {
     fn from(value: embassy_net::tcp::ConnectError) -> Self {
-        Self::Connect(value)
+        Self::TcpConnect(value)
     }
 }
 
-impl From<embassy_net::tcp::Error> for HttpClientError {
+impl From<embassy_net::tcp::Error> for HttpError {
     fn from(value: embassy_net::tcp::Error) -> Self {
-        Self::Error(value)
+        Self::Tcp(value)
+    }
+}
+
+impl From<embassy_net::dns::Error> for HttpError {
+    fn from(value: embassy_net::dns::Error) -> Self {
+        Self::Dns(value)
+    }
+}
+
+enum ClientError {
+    Http(HttpError),
+    Rtc(RtcError),
+}
+
+impl Format for ClientError {
+    fn format(&self, fmt: Formatter) {
+        match self {
+            ClientError::Http(e) => defmt::write!(fmt, "Http({:x})", e),
+            ClientError::Rtc(RtcError::InvalidDateTime(_)) => {
+                defmt::write!(fmt, "Rtc(InvalidDateTime)")
+            }
+            ClientError::Rtc(RtcError::NotRunning) => {
+                defmt::write!(fmt, "NotRunning")
+            }
+        }
+    }
+}
+
+impl From<HttpError> for ClientError {
+    fn from(value: HttpError) -> Self {
+        Self::Http(value)
+    }
+}
+
+impl From<RtcError> for ClientError {
+    fn from(value: RtcError) -> Self {
+        Self::Rtc(value)
     }
 }
 
@@ -374,7 +387,7 @@ async fn http_get<T: Into<IpEndpoint>>(
     path: &str,
     socket: &mut TcpSocket<'_>,
     buf: &mut [u8],
-) -> Result<usize, HttpClientError> {
+) -> Result<usize, HttpError> {
     socket.abort();
     socket.flush().await?;
     socket.connect(remote_endpoint).await?;
@@ -412,9 +425,9 @@ enum BinColour {
 impl From<BinColour> for RGB8 {
     fn from(value: BinColour) -> Self {
         match value {
-            BinColour::Blue => RGB8::new(0, 0, 255),
-            BinColour::Green => RGB8::new(0, 255, 0),
-            BinColour::Black => RGB8::new(255, 255, 255),
+            BinColour::Blue => BLUE,
+            BinColour::Green => GREEN,
+            BinColour::Black => WHITE,
         }
     }
 }
