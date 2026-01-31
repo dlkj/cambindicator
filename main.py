@@ -15,7 +15,6 @@ from bindicator import get_bins_for_date
 
 
 def main():
-
     pin = Pin(0, Pin.OUT)
     np = NeoPixel(pin, 16)
     try:
@@ -30,9 +29,9 @@ def main():
 
 
 def get_config():
-    rp2.country('GB')
+    rp2.country("GB")
     try:
-        config_file = open('config.json', 'r')
+        config_file = open("config.json", "r")
         config = json.loads(config_file.read())
     finally:
         config_file.close()
@@ -42,7 +41,7 @@ def get_config():
 def init_wifi(config):
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
-    wlan.connect(config.get('ssid'), config.get('password'))
+    wlan.connect(config.get("ssid"), config.get("password"))
     return wlan
 
 
@@ -53,15 +52,14 @@ def wait_for_wifi_connected(wlan, np):
         if wlan.status() < 0 or wlan.status() >= 3:
             break
         max_wait -= 1
-        print('waiting for connection...')
+        print("waiting for connection...")
         time.sleep_ms(750)
         np.fill((0, 0, 0))
         np.write
 
     # Handle connection error
     if wlan.status() != 3:
-        raise RuntimeError(
-            f"network connection failed. status: {wlan.status()}")
+        raise RuntimeError(f"network connection failed. status: {wlan.status()}")
 
 
 def inner_main(np):
@@ -89,8 +87,8 @@ def inner_main(np):
     print("WiFi connected")
 
     # network info
-    print('ip: ' + wlan.ifconfig()[0])
-    mac = ubinascii.hexlify(network.WLAN().config('mac'), ':').decode()
+    print("ip: " + wlan.ifconfig()[0])
+    mac = ubinascii.hexlify(network.WLAN().config("mac"), ":").decode()
     print(f"mac: {mac}")
 
     # purple - connected
@@ -120,6 +118,9 @@ def inner_main(np):
             print("Calendar fetched")
             bins = get_bins_for_date(calendar_events, tomorrow(rtc.datetime()))
 
+            # Filter to only include "GREEN", "BLUE" or "BLACK"
+            bins = bins & {"GREEN", "BLUE", "BLACK"}
+
         (_, _, _, _, hour, _, _, _) = rtc.datetime()
 
         if 17 <= hour <= 22:
@@ -145,9 +146,19 @@ def inner_main(np):
 
 
 def tomorrow(date):
-
     days_in_month = {
-        1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30, 7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31
+        1: 31,
+        2: 28,
+        3: 31,
+        4: 30,
+        5: 31,
+        6: 30,
+        7: 31,
+        8: 31,
+        9: 30,
+        10: 31,
+        11: 30,
+        12: 31,
     }
 
     (year, month, day, hour, min, sec, ms, ns) = date
@@ -160,7 +171,7 @@ def tomorrow(date):
     if day > days_in_month[month]:
         day = 1
         month += 1
-    
+
     if month > 12:
         month = 1
 
@@ -170,7 +181,8 @@ def tomorrow(date):
 def get_events():
     try:
         response = urequests.get(
-            "https://servicelayer3c.azure-api.net/wastecalendar/calendar/ical/200004185983")
+            "https://servicelayer3c.azure-api.net/wastecalendar/calendar/ical/200004185983"
+        )
         (_, events) = parse(response.text.splitlines())
     finally:
         response.close()
